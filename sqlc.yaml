@@ -1,0 +1,9 @@
+version: "1"
+
+packages:
+  - name: "persistence"           # Name of the Go package for generated files
+    path: "persistence"           # Output directory for generated Go files
+    queries: "sql/queries.sql"        # Path to SQL queries
+    schema: "sql/schema.sql"          # Path to SQL schema files
+    engine: "postgresql"          # Database engine type (e.g., postgresql)
+    emit_json_tags: true          # Optional: Add JSON tags to generated structs
