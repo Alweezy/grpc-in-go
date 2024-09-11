@@ -5,9 +5,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
+	"grpc-in-go/pb"
 	"net"
 	"testing"
-	"yq-app-challenge/pb"
 )
 
 const bufSize = 1024 * 1024

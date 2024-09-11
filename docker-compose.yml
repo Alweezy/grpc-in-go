@@ -1,4 +1,5 @@
 version: '3.8'
+
 services:
   db:
     image: postgres:latest
@@ -10,7 +11,45 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "15432:5432"
+
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile.producer
+    ports:
+      - "2112:2112" # Expose Prometheus metrics port
+    depends_on:
+      - db
+
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile.consumer
+    ports:
+      - "2113:2113" # Expose Prometheus metrics port
+    depends_on:
+      - db
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090" # Prometheus web UI
+    depends_on:
+      - producer
+      - consumer
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000" # Grafana web UI
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin # Default admin password for Grafana
 
 volumes:
   postgres_data:
+  grafana_data:
