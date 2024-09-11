@@ -6,10 +6,10 @@ import (
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
+	"grpc-in-go/pb"
 	"net"
 	"testing"
 	"time"
-	"yq-app-challenge/pb"
 )
 
 // 1MB buffer size for the listener

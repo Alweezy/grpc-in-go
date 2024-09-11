@@ -3,16 +3,37 @@ package main
 import (
 	"context"
 	"database/sql"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"grpc-in-go/pb"
+	"grpc-in-go/persistence"
 	"log"
 	"net"
+	"net/http"
 	"time"
-	"yq-app-challenge/pb"
-	"yq-app-challenge/persistence"
 
 	_ "github.com/lib/pq"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 )
+
+// Prometheus metrics
+var (
+	tasksProcessed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "tasks_processed_total",
+		Help: "Total number of tasks processed by the consumer service",
+	})
+	taskProcessingFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "task_processing_failures_total",
+		Help: "Total number of task processing failures",
+	})
+)
+
+func init() {
+	// Register the Prometheus metrics
+	prometheus.MustRegister(tasksProcessed)
+	prometheus.MustRegister(taskProcessingFailures)
+}
 
 type server struct {
 	pb.UnimplementedTaskServiceServer
@@ -34,9 +55,11 @@ func (s *server) SendTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskRes
 	// Update task state to "done"
 	err := s.updateTaskState(req.Type, "done") // UpdateTaskState logic
 	if err != nil {
+		taskProcessingFailures.Inc() // Increment the failure metric
 		return nil, err
 	}
 
+	tasksProcessed.Inc() // Increment the processed tasks counter
 	return &pb.TaskResponse{Status: "Processed"}, nil
 }
 
@@ -55,6 +78,13 @@ func (s *server) updateTaskState(taskID int32, state string) error {
 }
 
 func main() {
+	// Start the Prometheus metrics endpoint in a separate goroutine
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Println("Prometheus metrics available at http://localhost:2113/metrics")
+		log.Fatal(http.ListenAndServe(":2113", nil)) // Port for Prometheus metrics
+	}()
+
 	// Start listener for gRPC server
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
@@ -62,14 +92,14 @@ func main() {
 	}
 
 	// Set up DB connection
-	db, err := sql.Open("postgres", "postgresql://admin:password@localhost:5432/tasks_db?sslmode=disable")
+	db, err := sql.Open("postgres", "postgresql://admin:password@db:5432/tasks_db?sslmode=disable")
 	if err != nil {
 		log.Fatalf("Failed to connect to the database: %v", err)
 	}
 	defer func(db *sql.DB) {
 		err := db.Close()
 		if err != nil {
-
+			log.Printf("Error closing DB connection: %v", err)
 		}
 	}(db)
 

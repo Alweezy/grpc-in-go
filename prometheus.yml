@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'producer'
+    static_configs:
+      - targets: ['producer:2112'] # Scrape producer's /metrics endpoint
+
+  - job_name: 'consumer'
+    static_configs:
+      - targets: ['consumer:2113'] # Scrape consumer's /metrics endpoint
