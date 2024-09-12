@@ -16,6 +16,7 @@ import (
 	_ "github.com/lib/pq"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
+	_ "net/http/pprof" // This import is necessary to initialize the pprof endpoints
 )
 
 // Prometheus metrics
@@ -151,6 +152,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
+
+	// Start the pprof server
+	go func() {
+		log.Println("Starting pprof server on :6060")
+		log.Fatal(http.ListenAndServe(":6060", nil)) // Bind to all network interfaces
+	}()
 
 	// Set up DB connection
 	db, err := sql.Open("postgres", "postgresql://admin:password@db:5432/tasks_db?sslmode=disable")
