@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -27,12 +28,39 @@ var (
 		Name: "task_processing_failures_total",
 		Help: "Total number of task processing failures",
 	})
+	tasksByType = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "tasks_by_type_total",
+			Help: "Total number of tasks processed by task type",
+		},
+		[]string{"task_type"},
+	)
+	taskValuesByType = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "task_values_by_type_total",
+			Help: "Total sum of task values processed by task type",
+		},
+		[]string{"task_type"},
+	)
+	tasksInProcessing = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "tasks_in_processing",
+		Help: "Number of tasks currently being processed by the consumer",
+	})
+)
+
+// Map to store the total sum of task values by type
+var (
+	taskTypeSums   = make(map[int32]float64)
+	taskTypeSumsMu sync.Mutex // Mutex for thread-safe access to the map
 )
 
 func init() {
 	// Register the Prometheus metrics
 	prometheus.MustRegister(tasksProcessed)
 	prometheus.MustRegister(taskProcessingFailures)
+	prometheus.MustRegister(tasksByType)
+	prometheus.MustRegister(taskValuesByType)
+	prometheus.MustRegister(tasksInProcessing)
 }
 
 type server struct {
@@ -49,17 +77,50 @@ func (s *server) SendTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskRes
 
 	log.Printf("Processing task: Type=%d, Value=%d", req.Type, req.Value)
 
-	// Simulate processing delay
-	time.Sleep(time.Duration(req.Value) * time.Millisecond)
-
-	// Update task state to "done"
-	err := s.updateTaskState(req.Type, "done") // UpdateTaskState logic
+	// Step 1: Update task state to "processing" immediately when received by the consumer
+	err := s.updateTaskState(req.Type, "processing")
 	if err != nil {
 		taskProcessingFailures.Inc() // Increment the failure metric
 		return nil, err
 	}
 
-	tasksProcessed.Inc() // Increment the processed tasks counter
+	// Increment the "in processing" gauge
+	tasksInProcessing.Inc()
+
+	// Step 2: Simulate processing delay
+	delayTime := time.Duration(req.Value) * time.Millisecond
+	time.Sleep(delayTime)
+	log.Printf("Delaying task: Type=%d, Value=%d", req.Type, req.Value)
+	log.Printf("Task delayed by: %v", delayTime)
+
+	// Step 3: Update task state to "done" after processing is complete
+	err = s.updateTaskState(req.Type, "done")
+	if err != nil {
+		taskProcessingFailures.Inc() // Increment the failure metric
+		return nil, err
+	}
+
+	// Decrement the "in processing" gauge as task is done
+	tasksInProcessing.Dec()
+
+	// Increment the processed tasks counter
+	tasksProcessed.Inc()
+
+	// Increment the processed tasks by type
+	tasksByType.With(prometheus.Labels{"task_type": string(req.Type)}).Inc()
+
+	// Add task value to the total sum for this task type in Prometheus
+	taskValuesByType.With(prometheus.Labels{"task_type": string(req.Type)}).Add(float64(req.Value))
+
+	// Update the local map with the total sum of task values for this task type
+	taskTypeSumsMu.Lock()
+	taskTypeSums[req.Type] += float64(req.Value)
+	totalValueForType := taskTypeSums[req.Type]
+	taskTypeSumsMu.Unlock()
+
+	// Log the task details and total sum for the task type
+	log.Printf("Task processed: Type=%d, Value=%d, TotalValueForType=%f", req.Type, req.Value, totalValueForType)
+
 	return &pb.TaskResponse{Status: "Processed"}, nil
 }
 

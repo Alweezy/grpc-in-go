@@ -1,5 +1,6 @@
 global:
-  scrape_interval: 15s
+  scrape_interval: 5ms  # Scrape every 5 milliseconds
+  evaluation_interval: 10ms
 
 scrape_configs:
   - job_name: 'producer'

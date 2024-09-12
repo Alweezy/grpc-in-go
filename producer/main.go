@@ -26,12 +26,23 @@ var (
 		Name: "task_production_failures_total",
 		Help: "Total number of task production failures",
 	})
+	backlogSize = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "task_producer_backlog_size",
+		Help: "Current number of unprocessed tasks in the backlog",
+	})
 )
+
+// Configurable max backlog size (set a threshold for unprocessed tasks)
+const maxBacklog = 100
+
+// Track the actual backlog size in a local variable
+var currentBacklog int
 
 func init() {
 	// Register the Prometheus metrics
 	prometheus.MustRegister(tasksProduced)
 	prometheus.MustRegister(taskProductionFailures)
+	prometheus.MustRegister(backlogSize)
 }
 
 func main() {
@@ -59,8 +70,8 @@ func main() {
 
 	// TODO: Alvin, if this were production ready, we need to establish gRPC secure conn
 	// Establish gRPC connection
-	//creds, err := credentials.NewClientTLSFromFile("path/to/cert/file", "")
-	//conn, err := grpc.Dial("consumer:50051", grpc.WithTransportCredentials(creds))
+	// creds, err := credentials.NewClientTLSFromFile("path/to/cert/file", "")
+	// conn, err := grpc.Dial("consumer:50051", grpc.WithTransportCredentials(creds))
 	// Establish gRPC connection with insecure credentials (for development purposes)
 	conn, err := grpc.Dial("consumer:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	//conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -71,8 +82,16 @@ func main() {
 
 	client := pb.NewTaskServiceClient(conn)
 
-	// Simulate task production
-	for {
+	// Simulate task production with controlled rate and backlog handling
+	ticker := time.NewTicker(time.Second) // Produces one task every second
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if currentBacklog >= maxBacklog {
+			log.Println("Max backlog reached, pausing task production...")
+			continue // Skip task production until backlog decreases
+		}
+
 		taskType := rand.Intn(10)
 		taskValue := rand.Intn(100)
 
@@ -80,17 +99,24 @@ func main() {
 		err = createTask(queries, taskType, taskValue)
 		if err != nil {
 			taskProductionFailures.Inc() // Increment task production failure metric
-			log.Fatalf("Failed to create task: %v", err)
+			log.Printf("Failed to create task: %v", err)
+			continue
 		}
 
 		// Increment the produced tasks counter
 		tasksProduced.Inc()
 
+		// Increment the local backlog size and the Prometheus gauge
+		currentBacklog++
+		backlogSize.Set(float64(currentBacklog))
+
 		// Send task over gRPC to Consumer
 		sendTask(client, taskType, taskValue)
 
-		// Control message production rate
-		time.Sleep(time.Second * 1)
+		// Simulate task being removed from backlog after consumption
+		// This simulates the idea of the task being consumed from the queue
+		currentBacklog--
+		backlogSize.Set(float64(currentBacklog))
 	}
 }
 
