@@ -13,6 +13,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	_ "net/http/pprof" // This import is necessary to initialize the pprof endpoints
 	"time"
 )
 
@@ -51,6 +52,12 @@ func main() {
 		http.Handle("/metrics", promhttp.Handler())
 		log.Println("Prometheus metrics available at http://localhost:2112/metrics")
 		log.Fatal(http.ListenAndServe(":2112", nil)) // Port for Prometheus metrics
+	}()
+
+	// Start the pprof server
+	go func() {
+		log.Println("Starting pprof server on :6060")
+		log.Fatal(http.ListenAndServe(":6060", nil)) // Bind to all network interfaces
 	}()
 
 	// Initialize DB connection
