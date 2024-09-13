@@ -1,0 +1,15 @@
+database:
+  host: "db"
+  port: 5432
+  user: "admin"
+  password: "password"
+  dbname: "tasks_db"
+  sslmode: "disable"
+
+producer:
+  port: 2112
+  profiling_port: 6060
+  grpc_consumer_url: "consumer:50051"
+
+prometheus:
+  scrape_interval: "15s"
