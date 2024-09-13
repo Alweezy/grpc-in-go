@@ -90,11 +90,13 @@ In separate terminal windows, run the following commands:
 ###### Producer:
 
 ```
+export ENVIRONMENT=local
 cd producer
 go run main.go
 ```
 ###### Consumer:
 ```
+export ENVIRONMENT=local
 cd consumer
 go run main.go
 ```
@@ -117,9 +119,11 @@ The migration files are stored in the migrations/ directory. The provided Go scr
 Steps:
 
 #### 1.	Apply a migration:
-Run the following command, replacing <migration_file> with the actual migration file (e.g., 000001_create_tasks_table.up.sql):
+On a terminal session un the following command, replacing <migration_file> with the actual migration file (e.g., 000001_create_tasks_table.up.sql):
 
 ```
+export ENVIRONMENT=local
+
 go run scripts/migrate.go migrations/000001_create_tasks_table.up.sql>
 ```
 This will apply the migration to the PostgreSQL database running inside the Docker container.
@@ -160,6 +164,8 @@ Prometheus
 
 •	Grafana is available at http://localhost:3000.
 •	Default credentials: admin/admin.
+
+> 👉 Grafana might prompt you to change the password but that's pretty straightforward!
 
 You can set up dashboards in Grafana to visualize the following:
 

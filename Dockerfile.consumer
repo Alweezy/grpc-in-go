@@ -25,8 +25,11 @@ WORKDIR /root/
 # Copy the binary from the builder stage
 COPY --from=builder /app/consumer-binary .
 
-# Expose the Prometheus metrics port
-EXPOSE 2113
+# Copy the updated consumer config from the configs folder
+COPY --from=builder /app/configs/consumer.docker.config.yaml ./configs/
+
+# Expose Prometheus metrics and pprof ports
+EXPOSE 2113 6061
 
 # Command to run the binary
 CMD ["./consumer-binary"]

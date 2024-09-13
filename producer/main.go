@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -10,6 +11,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"grpc-in-go/pb"
 	"grpc-in-go/persistence"
+	"grpc-in-go/util"
 	"log"
 	"math/rand"
 	"net/http"
@@ -33,10 +35,34 @@ var (
 	})
 )
 
-// Configurable max backlog size (set a threshold for unprocessed tasks)
+// Config struct to hold configuration values
+type Config struct {
+	Database   Database   `mapstructure:"database"`
+	Producer   Producer   `mapstructure:"producer"`
+	Prometheus Prometheus `mapstructure:"prometheus"`
+}
+
+type Database struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	DbName   string `mapstructure:"dbname"`
+	SslMode  string `mapstructure:"sslmode"`
+}
+
+type Producer struct {
+	Port            int    `mapstructure:"port"`
+	ProfilingPort   int    `mapstructure:"profiling_port"`
+	GrpcConsumerUrl string `mapstructure:"grpc_consumer_url"`
+}
+
+type Prometheus struct {
+	ScrapeInterval string `mapstructure:"scrape_interval"`
+}
+
 const maxBacklog = 100
 
-// Track the actual backlog size in a local variable
 var currentBacklog int
 
 func init() {
@@ -47,41 +73,54 @@ func init() {
 }
 
 func main() {
-	// Start the Prometheus metrics endpoint in a separate goroutine
+	// Define the AppConfig to load the producer config file
+	appConfig := &util.AppConfig{
+		FilePath: "configs",
+		FileName: "producer",
+		Type:     util.ConfigYAML,
+	}
+
+	// Define a Config struct to hold the loaded configuration
+	var config Config
+
+	// Load the configuration using the utility function
+	if err := util.LoadConfig(appConfig, &config); err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Start the Prometheus metrics endpoint
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		log.Println("Prometheus metrics available at http://localhost:2112/metrics")
-		log.Fatal(http.ListenAndServe(":2112", nil)) // Port for Prometheus metrics
+		log.Printf("Prometheus metrics available at http://localhost:%d/metrics", config.Producer.Port)
+		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", config.Producer.Port), nil))
 	}()
 
-	// Start the pprof server
+	// Start the pprof server on the configured profiling port
 	go func() {
-		log.Println("Starting pprof server on :6060")
-		log.Fatal(http.ListenAndServe(":6060", nil)) // Bind to all network interfaces
+		log.Printf("Starting pprof server on :%d", config.Producer.ProfilingPort)
+		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", config.Producer.ProfilingPort), nil))
 	}()
 
-	// Initialize DB connection
-	db, err := sql.Open("postgres", "postgresql://admin:password@db:5432/tasks_db?sslmode=disable")
+	// Initialize DB connection using the config values
+	dbSource := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		config.Database.User,
+		config.Database.Password,
+		config.Database.Host,
+		config.Database.Port,
+		config.Database.DbName,
+		config.Database.SslMode,
+	)
+
+	db, err := sql.Open("postgres", dbSource)
 	if err != nil {
 		log.Fatalf("Failed to connect to the database: %v", err)
 	}
-	defer func(db *sql.DB) {
-		err := db.Close()
-		if err != nil {
-			log.Printf("Error closing DB connection: %v", err)
-		}
-	}(db)
+	defer db.Close()
 
-	// Initialize Queries struct for SQL operations
 	queries := persistence.New(db)
 
-	// TODO: Alvin, if this were production ready, we need to establish gRPC secure conn
-	// Establish gRPC connection
-	// creds, err := credentials.NewClientTLSFromFile("path/to/cert/file", "")
-	// conn, err := grpc.Dial("consumer:50051", grpc.WithTransportCredentials(creds))
-	// Establish gRPC connection with insecure credentials (for development purposes)
-	conn, err := grpc.Dial("consumer:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	//conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Establish gRPC connection with the consumer using the config value
+	conn, err := grpc.Dial(config.Producer.GrpcConsumerUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect to Consumer: %v", err)
 	}
@@ -96,32 +135,25 @@ func main() {
 	for range ticker.C {
 		if currentBacklog >= maxBacklog {
 			log.Println("Max backlog reached, pausing task production...")
-			continue // Skip task production until backlog decreases
+			continue
 		}
 
 		taskType := rand.Intn(10)
 		taskValue := rand.Intn(100)
 
-		// Insert task into DB using sqlc-generated function
 		err = createTask(queries, taskType, taskValue)
 		if err != nil {
-			taskProductionFailures.Inc() // Increment task production failure metric
+			taskProductionFailures.Inc()
 			log.Printf("Failed to create task: %v", err)
 			continue
 		}
 
-		// Increment the produced tasks counter
 		tasksProduced.Inc()
-
-		// Increment the local backlog size and the Prometheus gauge
 		currentBacklog++
 		backlogSize.Set(float64(currentBacklog))
 
-		// Send task over gRPC to Consumer
 		sendTask(client, taskType, taskValue)
 
-		// Simulate task being removed from backlog after consumption
-		// This simulates the idea of the task being consumed from the queue
 		currentBacklog--
 		backlogSize.Set(float64(currentBacklog))
 	}
@@ -130,13 +162,11 @@ func main() {
 func createTask(queries *persistence.Queries, taskType int, taskValue int) error {
 	ctx := context.Background()
 
-	// Populate CreateTaskParams
 	params := persistence.CreateTaskParams{
 		Type:  sql.NullInt32{Int32: int32(taskType), Valid: true},
 		Value: sql.NullInt32{Int32: int32(taskValue), Valid: true},
 	}
 
-	// Insert task into DB
 	return queries.CreateTask(ctx, params)
 }
 

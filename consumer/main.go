@@ -3,20 +3,21 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/time/rate"
+	"google.golang.org/grpc"
 	"grpc-in-go/pb"
 	"grpc-in-go/persistence"
+	"grpc-in-go/util"
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"sync"
 	"time"
-
-	_ "github.com/lib/pq"
-	"golang.org/x/time/rate"
-	"google.golang.org/grpc"
-	_ "net/http/pprof" // This import is necessary to initialize the pprof endpoints
 )
 
 // Prometheus metrics
@@ -68,6 +69,110 @@ type server struct {
 	pb.UnimplementedTaskServiceServer
 	limiter *rate.Limiter
 	queries *persistence.Queries
+}
+
+// Config struct to hold configuration values
+type Config struct {
+	Database   Database   `mapstructure:"database"`
+	Consumer   Consumer   `mapstructure:"consumer"`
+	Prometheus Prometheus `mapstructure:"prometheus"`
+}
+
+type Database struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	DbName   string `mapstructure:"dbname"`
+	SslMode  string `mapstructure:"sslmode"`
+}
+
+type Consumer struct {
+	Port          int `mapstructure:"port"`
+	ProfilingPort int `mapstructure:"profiling_port"`
+	GrpcPort      int `mapstructure:"grpc_port"`
+}
+
+type Prometheus struct {
+	ScrapeInterval string `mapstructure:"scrape_interval"`
+}
+
+func main() {
+
+	// Load the configuration using the util function
+	appConfig := &util.AppConfig{
+		FilePath: "configs",
+		FileName: "consumer",
+		Type:     util.ConfigYAML,
+	}
+
+	// Define a Config struct to hold the loaded configuration
+	var config Config
+
+	// Load the configuration using the utility function
+	if err := util.LoadConfig(appConfig, &config); err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Start the Prometheus metrics endpoint in a separate goroutine
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Printf("Prometheus metrics available at http://localhost:%d/metrics", config.Consumer.Port)
+		log.Fatal(http.ListenAndServe(":2113", nil)) // Port for Prometheus metrics
+	}()
+
+	// Start listener for gRPC server
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", config.Consumer.GrpcPort))
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+
+	// Start the pprof server
+	go func() {
+		log.Printf("Starting pprof server on :%d", config.Consumer.ProfilingPort)
+		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", config.Consumer.ProfilingPort), nil))
+	}()
+
+	// Set up DB connection
+	// Initialize DB connection using the config values
+	dbSource := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		config.Database.User,
+		config.Database.Password,
+		config.Database.Host,
+		config.Database.Port,
+		config.Database.DbName,
+		config.Database.SslMode,
+	)
+	db, err := sql.Open("postgres", dbSource)
+	if err != nil {
+		log.Fatalf("Failed to connect to the database: %v", err)
+	}
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			log.Printf("Error closing DB connection: %v", err)
+		}
+	}(db)
+
+	// Initialize sqlc queries struct
+	queries := persistence.New(db)
+
+	// Create a rate limiter: allows 5 tasks per second
+	limiter := rate.NewLimiter(5, 1)
+
+	// Initialize gRPC server
+	grpcServer := grpc.NewServer()
+	pb.RegisterTaskServiceServer(grpcServer, &server{
+		limiter: limiter,
+		queries: queries, // Inject queries into the server
+	})
+
+	log.Printf("Consumer service listening on :%d", config.Consumer.GrpcPort)
+
+	// Start the gRPC server
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve gRPC server: %v", err)
+	}
 }
 
 func (s *server) SendTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskResponse, error) {
@@ -137,57 +242,4 @@ func (s *server) updateTaskState(taskID int32, state string) error {
 
 	// Call the UpdateTaskState query using sqlc-generated function
 	return s.queries.UpdateTaskState(ctx, params)
-}
-
-func main() {
-	// Start the Prometheus metrics endpoint in a separate goroutine
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		log.Println("Prometheus metrics available at http://localhost:2113/metrics")
-		log.Fatal(http.ListenAndServe(":2113", nil)) // Port for Prometheus metrics
-	}()
-
-	// Start listener for gRPC server
-	lis, err := net.Listen("tcp", ":50051")
-	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
-	}
-
-	// Start the pprof server
-	go func() {
-		log.Println("Starting pprof server on :6060")
-		log.Fatal(http.ListenAndServe(":6060", nil)) // Bind to all network interfaces
-	}()
-
-	// Set up DB connection
-	db, err := sql.Open("postgres", "postgresql://admin:password@db:5432/tasks_db?sslmode=disable")
-	if err != nil {
-		log.Fatalf("Failed to connect to the database: %v", err)
-	}
-	defer func(db *sql.DB) {
-		err := db.Close()
-		if err != nil {
-			log.Printf("Error closing DB connection: %v", err)
-		}
-	}(db)
-
-	// Initialize sqlc queries struct
-	queries := persistence.New(db)
-
-	// Create a rate limiter: allows 5 tasks per second
-	limiter := rate.NewLimiter(5, 1)
-
-	// Initialize gRPC server
-	grpcServer := grpc.NewServer()
-	pb.RegisterTaskServiceServer(grpcServer, &server{
-		limiter: limiter,
-		queries: queries, // Inject queries into the server
-	})
-
-	log.Println("Consumer service listening on :50051")
-
-	// Start the gRPC server
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve gRPC server: %v", err)
-	}
 }
