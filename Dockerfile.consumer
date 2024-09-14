@@ -1,0 +1,35 @@
+# Use the official Go image as the base image
+FROM golang:1.22-alpine as builder
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Copy go.mod and go.sum files first to leverage Docker layer caching
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy the rest of the application code
+COPY . .
+
+# Build the Consumer binary
+RUN go build -o consumer-binary ./consumer/main.go
+
+# Use a minimal base image to run the built binary
+FROM alpine:latest
+
+# Set up working directory inside the new base image
+WORKDIR /root/
+
+# Copy the binary from the builder stage
+COPY --from=builder /app/consumer-binary .
+
+# Copy the updated consumer config from the configs folder
+COPY --from=builder /app/configs/consumer.docker.config.yaml ./configs/
+
+# Expose Prometheus metrics and pprof ports
+EXPOSE 2113 6061
+
+# Command to run the binary
+CMD ["./consumer-binary"]
