@@ -30,6 +30,7 @@ services:
     ports:
       - "2113:2113" # Expose Prometheus metrics port
       - "6061:6060" # Expose pprof for profiling for consumer
+      - "50051:50051" # Expose consumer endpoint in case we want to run producer locally
     depends_on:
       - db
 

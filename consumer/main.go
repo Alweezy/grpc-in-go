@@ -181,10 +181,10 @@ func (s *server) SendTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskRes
 		return nil, err
 	}
 
-	log.Printf("Processing task: Type=%d, Value=%d", req.Type, req.Value)
+	log.Printf("Processing task ID: %d, Type=%d, Value=%d", req.Id, req.Type, req.Value)
 
 	// Step 1: Update task state to "processing" immediately when received by the consumer
-	err := s.updateTaskState(req.Type, "processing")
+	err := s.updateTaskState(req.Id, "processing")
 	if err != nil {
 		taskProcessingFailures.Inc() // Increment the failure metric
 		return nil, err
@@ -196,11 +196,11 @@ func (s *server) SendTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskRes
 	// Step 2: Simulate processing delay
 	delayTime := time.Duration(req.Value) * time.Millisecond
 	time.Sleep(delayTime)
-	log.Printf("Delaying task: Type=%d, Value=%d", req.Type, req.Value)
-	log.Printf("Task delayed by: %v", delayTime)
+	log.Printf("Delaying task ID: %d: Type=%d, Value=%d", req.Id, req.Type, req.Value)
+	log.Printf("Task ID: %d delayed by: %v", req.Id, delayTime)
 
 	// Step 3: Update task state to "done" after processing is complete
-	err = s.updateTaskState(req.Type, "done")
+	err = s.updateTaskState(req.Id, "done")
 	if err != nil {
 		taskProcessingFailures.Inc() // Increment the failure metric
 		return nil, err
@@ -225,7 +225,7 @@ func (s *server) SendTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskRes
 	taskTypeSumsMu.Unlock()
 
 	// Log the task details and total sum for the task type
-	log.Printf("Task processed: Type=%d, Value=%d, TotalValueForType=%f", req.Type, req.Value, totalValueForType)
+	log.Printf("Task, Task ID: %d processed (Done): Type=%d, Value=%d, TotalValueForType=%f", req.Id, req.Type, req.Value, totalValueForType)
 
 	return &pb.TaskResponse{Status: "Processed"}, nil
 }

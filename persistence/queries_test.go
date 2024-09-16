@@ -28,14 +28,15 @@ func TestCreateTask(t *testing.T) {
 	taskValue := sql.NullInt32{Int32: 50, Valid: true}
 	ctx := context.Background()
 
-	// Set up the expected SQL execution
-	mock.ExpectExec("INSERT INTO tasks").
+	// Set up the expected SQL execution and return the generated ID (e.g., 1)
+	mock.ExpectQuery("INSERT INTO tasks").
 		WithArgs(taskType, taskValue).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1)) // Returning the generated ID
 
 	// Call the CreateTask method
-	err = queries.CreateTask(ctx, CreateTaskParams{Type: taskType, Value: taskValue})
+	taskID, err := queries.CreateTask(ctx, CreateTaskParams{Type: taskType, Value: taskValue})
 	assert.NoError(t, err)
+	assert.Equal(t, int32(1), taskID) // Ensure the returned ID is correct
 
 	// Ensure all mock expectations were met
 	assert.NoError(t, mock.ExpectationsWereMet())

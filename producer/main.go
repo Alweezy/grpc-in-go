@@ -129,7 +129,7 @@ func main() {
 	client := pb.NewTaskServiceClient(conn)
 
 	// Simulate task production with controlled rate and backlog handling
-	ticker := time.NewTicker(time.Second) // Produces one task every second
+	ticker := time.NewTicker(time.Millisecond) // Produces one task every second
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -141,7 +141,7 @@ func main() {
 		taskType := rand.Intn(10)
 		taskValue := rand.Intn(100)
 
-		err = createTask(queries, taskType, taskValue)
+		taskID, err := createTask(queries, taskType, taskValue)
 		if err != nil {
 			taskProductionFailures.Inc()
 			log.Printf("Failed to create task: %v", err)
@@ -152,14 +152,14 @@ func main() {
 		currentBacklog++
 		backlogSize.Set(float64(currentBacklog))
 
-		sendTask(client, taskType, taskValue)
+		sendTask(client, taskID, taskType, taskValue)
 
 		currentBacklog--
 		backlogSize.Set(float64(currentBacklog))
 	}
 }
 
-func createTask(queries *persistence.Queries, taskType int, taskValue int) error {
+func createTask(queries *persistence.Queries, taskType int, taskValue int) (int32, error) {
 	ctx := context.Background()
 
 	params := persistence.CreateTaskParams{
@@ -167,11 +167,18 @@ func createTask(queries *persistence.Queries, taskType int, taskValue int) error
 		Value: sql.NullInt32{Int32: int32(taskValue), Valid: true},
 	}
 
-	return queries.CreateTask(ctx, params)
+	// Create task and return the generated ID
+	taskID, err := queries.CreateTask(ctx, params)
+	if err != nil {
+		return 0, err
+	}
+
+	return taskID, nil
 }
 
-func sendTask(client pb.TaskServiceClient, taskType int, taskValue int) {
+func sendTask(client pb.TaskServiceClient, taskID int32, taskType int, taskValue int) {
 	_, err := client.SendTask(context.Background(), &pb.TaskRequest{
+		Id:    taskID, // Send the task ID
 		Type:  int32(taskType),
 		Value: int32(taskValue),
 	})
