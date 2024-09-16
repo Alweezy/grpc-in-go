@@ -10,9 +10,10 @@ import (
 	"database/sql"
 )
 
-const createTask = `-- name: CreateTask :exec
+const createTask = `-- name: CreateTask :one
 INSERT INTO tasks (type, value, state)
 VALUES ($1, $2, 'received')
+RETURNING id
 `
 
 type CreateTaskParams struct {
@@ -20,9 +21,11 @@ type CreateTaskParams struct {
 	Value sql.NullInt32 `json:"value"`
 }
 
-func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) error {
-	_, err := q.db.ExecContext(ctx, createTask, arg.Type, arg.Value)
-	return err
+func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (int32, error) {
+	row := q.db.QueryRowContext(ctx, createTask, arg.Type, arg.Value)
+	var id int32
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getTaskByID = `-- name: GetTaskByID :one

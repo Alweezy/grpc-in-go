@@ -11,6 +11,7 @@ service TaskService {
 message TaskRequest {
   int32 type = 1;
   int32 value = 2;
+  int32 Id = 3;
 }
 
 message TaskResponse {
