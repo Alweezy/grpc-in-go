@@ -7,15 +7,17 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"grpc-in-go/pb"
 	"grpc-in-go/persistence"
 	"grpc-in-go/util"
-	"log"
+	"grpc-in-go/util/logger"
 	"math/rand"
 	"net/http"
 	_ "net/http/pprof" // This import is necessary to initialize the pprof endpoints
+	"os"
 	"time"
 )
 
@@ -37,9 +39,10 @@ var (
 
 // Config struct to hold configuration values
 type Config struct {
-	Database   Database   `mapstructure:"database"`
-	Producer   Producer   `mapstructure:"producer"`
-	Prometheus Prometheus `mapstructure:"prometheus"`
+	Database   Database          `mapstructure:"database"`
+	Producer   Producer          `mapstructure:"producer"`
+	Prometheus Prometheus        `mapstructure:"prometheus"`
+	Logger     *logger.LogConfig `mapstructure:"logger"`
 }
 
 type Database struct {
@@ -72,7 +75,15 @@ func init() {
 	prometheus.MustRegister(backlogSize)
 }
 
+var version string
+
 func main() {
+	// Check if version flag is provided
+	if len(os.Args) > 1 && os.Args[1] == "-version" {
+		fmt.Printf("Producer service version: %s\n", version)
+		return
+	}
+
 	// Define the AppConfig to load the producer config file
 	appConfig := &util.AppConfig{
 		FilePath: "configs",
@@ -85,20 +96,52 @@ func main() {
 
 	// Load the configuration using the utility function
 	if err := util.LoadConfig(appConfig, &config); err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		logger.LogError("Failed to load configuration", err, &logger.LogContext{
+			"service": "producer",
+		})
+		return
 	}
+
+	// Initialize logger
+	logFormatter := &logrus.TextFormatter{
+		FullTimestamp: true,
+	}
+	err := logger.LoadLogger(config.Logger, logFormatter)
+	if err != nil {
+		logger.LogError("Failed to initialize logger", err, &logger.LogContext{
+			"service": "producer",
+		})
+		return
+	}
+
+	logger.LogInfo("Producer service starting", &logger.LogContext{
+		"version": version,
+	})
 
 	// Start the Prometheus metrics endpoint
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		log.Printf("Prometheus metrics available at http://localhost:%d/metrics", config.Producer.Port)
-		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", config.Producer.Port), nil))
+		logger.LogInfo("Prometheus metrics available", &logger.LogContext{
+			"port": config.Producer.Port,
+			"url":  fmt.Sprintf("http://localhost:%d/metrics", config.Producer.Port),
+		})
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", config.Producer.Port), nil); err != nil {
+			logger.LogError("Failed to start Prometheus metrics server", err, &logger.LogContext{
+				"port": config.Producer.Port,
+			})
+		}
 	}()
 
 	// Start the pprof server on the configured profiling port
 	go func() {
-		log.Printf("Starting pprof server on :%d", config.Producer.ProfilingPort)
-		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", config.Producer.ProfilingPort), nil))
+		logger.LogInfo("Starting pprof server", &logger.LogContext{
+			"port": config.Producer.ProfilingPort,
+		})
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", config.Producer.ProfilingPort), nil); err != nil {
+			logger.LogError("Failed to start pprof server", err, &logger.LogContext{
+				"port": config.Producer.ProfilingPort,
+			})
+		}
 	}()
 
 	// Initialize DB connection using the config values
@@ -113,28 +156,39 @@ func main() {
 
 	db, err := sql.Open("postgres", dbSource)
 	if err != nil {
-		log.Fatalf("Failed to connect to the database: %v", err)
+		logger.LogError("Failed to connect to the database", err, &logger.LogContext{
+			"host": config.Database.Host,
+			"port": config.Database.Port,
+			"db":   config.Database.DbName,
+		})
+		return
 	}
 	defer db.Close()
 
 	queries := persistence.New(db)
 
-	// Establish gRPC connection with the consumer using the config value
+	// Establish gRPC connection with the consumer
 	conn, err := grpc.Dial(config.Producer.GrpcConsumerUrl, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("Failed to connect to Consumer: %v", err)
+		logger.LogError("Failed to connect to Consumer", err, &logger.LogContext{
+			"grpc_url": config.Producer.GrpcConsumerUrl,
+		})
+		return
 	}
 	defer conn.Close()
 
 	client := pb.NewTaskServiceClient(conn)
 
 	// Simulate task production with controlled rate and backlog handling
-	ticker := time.NewTicker(time.Millisecond) // Produces one task every second
+	// produce one task every 500 microseconds
+	ticker := time.NewTicker(500 * time.Microsecond)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		if currentBacklog >= maxBacklog {
-			log.Println("Max backlog reached, pausing task production...")
+			logger.LogWarn("Max backlog reached, pausing task production", &logger.LogContext{
+				"backlog_size": currentBacklog,
+			})
 			continue
 		}
 
@@ -144,18 +198,21 @@ func main() {
 		taskID, err := createTask(queries, taskType, taskValue)
 		if err != nil {
 			taskProductionFailures.Inc()
-			log.Printf("Failed to create task: %v", err)
+			logger.LogError("Failed to create task", err, &logger.LogContext{
+				"task_type":  taskType,
+				"task_value": taskValue,
+			})
 			continue
 		}
 
 		tasksProduced.Inc()
 		currentBacklog++
 		backlogSize.Set(float64(currentBacklog))
+		logger.LogInfo(fmt.Sprintf("Current backlog size: %d", currentBacklog), &logger.LogContext{
+			"backlog_size": currentBacklog,
+		})
 
 		sendTask(client, taskID, taskType, taskValue)
-
-		currentBacklog--
-		backlogSize.Set(float64(currentBacklog))
 	}
 }
 
@@ -173,16 +230,36 @@ func createTask(queries *persistence.Queries, taskType int, taskValue int) (int3
 		return 0, err
 	}
 
+	logger.LogInfo("Task created", &logger.LogContext{
+		"task_id":    taskID,
+		"task_type":  taskType,
+		"task_value": taskValue,
+	})
+
 	return taskID, nil
 }
 
 func sendTask(client pb.TaskServiceClient, taskID int32, taskType int, taskValue int) {
-	_, err := client.SendTask(context.Background(), &pb.TaskRequest{
-		Id:    taskID, // Send the task ID
-		Type:  int32(taskType),
-		Value: int32(taskValue),
-	})
-	if err != nil {
-		log.Printf("Failed to send task: %v", err)
-	}
+	go func() {
+		_, err := client.SendTask(context.Background(), &pb.TaskRequest{
+			Id:    taskID,
+			Type:  int32(taskType),
+			Value: int32(taskValue),
+		})
+		if err != nil {
+			logger.LogError("Failed to send task", err, &logger.LogContext{
+				"task_id":    taskID,
+				"task_type":  taskType,
+				"task_value": taskValue,
+			})
+		} else {
+			// Only decrement backlog when the consumer successfully processes the task
+			currentBacklog--
+			backlogSize.Set(float64(currentBacklog))
+			logger.LogInfo("Task processed, backlog decremented", &logger.LogContext{
+				"task_id": taskID,
+				"backlog": currentBacklog,
+			})
+		}
+	}()
 }

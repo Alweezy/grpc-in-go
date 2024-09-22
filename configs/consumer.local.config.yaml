@@ -11,3 +11,7 @@ consumer:
   grpc_port: 50051
 prometheus:
   scrape_interval: "15s"
+
+logger:
+  level: debug
+  output_type: console

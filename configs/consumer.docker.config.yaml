@@ -13,3 +13,7 @@ consumer:
 
 prometheus:
   scrape_interval: "15s"
+
+logger:
+  level: debug
+  output_type: console

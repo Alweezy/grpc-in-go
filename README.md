@@ -40,6 +40,11 @@ cd grpc-in-go
 ```
 
 #### 2.	Run the Dockerized environment:
+As a preliminary, run:
+```
+go run scripts/env/generate_env.go
+```
+> 💡 This script execution will be necessary to obtain the version with which you are building your services with
 ```
 docker-compose up --build
 ```
@@ -114,7 +119,7 @@ go run main.go
 
 #### Applying Migrations
 
-The migration files are stored in the migrations/ directory. The provided Go script scripts/migrate.go can be used to apply migrations.
+The migration files are stored in the migrations/ directory. The provided Go script scripts/migrate/migrate.go can be used to apply migrations.
 
 Steps:
 
@@ -124,7 +129,7 @@ On a terminal session un the following command, replacing <migration_file> with 
 ```
 export ENVIRONMENT=local
 
-go run scripts/migrate.go migrations/000001_create_tasks_table.up.sql>
+go run scripts/migrate/migrate.go migrations/000001_create_tasks_table.up.sql>
 ```
 This will apply the migration to the PostgreSQL database running inside the Docker container.
 
