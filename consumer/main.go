@@ -7,15 +7,17 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"grpc-in-go/pb"
 	"grpc-in-go/persistence"
 	"grpc-in-go/util"
-	"log"
+	"grpc-in-go/util/logger"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"sync"
 	"time"
 )
@@ -73,9 +75,11 @@ type server struct {
 
 // Config struct to hold configuration values
 type Config struct {
-	Database   Database   `mapstructure:"database"`
-	Consumer   Consumer   `mapstructure:"consumer"`
-	Prometheus Prometheus `mapstructure:"prometheus"`
+	Database    Database          `mapstructure:"database"`
+	Consumer    Consumer          `mapstructure:"consumer"`
+	Prometheus  Prometheus        `mapstructure:"prometheus"`
+	Logger      *logger.LogConfig `mapstructure:"logger"`
+	RateLimiter RateLimiter       `mapstructure:"rate_limiter"`
 }
 
 type Database struct {
@@ -97,7 +101,18 @@ type Prometheus struct {
 	ScrapeInterval string `mapstructure:"scrape_interval"`
 }
 
+type RateLimiter struct {
+	TasksPerSecond float64 `mapstructure:"tasks_per_second"`
+}
+
+var version string
+
 func main() {
+
+	if len(os.Args) > 1 && os.Args[1] == "-version" {
+		fmt.Printf("Consumer service version: %s\n", version)
+		return
+	}
 
 	// Load the configuration using the util function
 	appConfig := &util.AppConfig{
@@ -111,30 +126,64 @@ func main() {
 
 	// Load the configuration using the utility function
 	if err := util.LoadConfig(appConfig, &config); err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		logger.LogError("Failed to load configuration", err, &logger.LogContext{
+			"service": "consumer",
+		})
+		return
 	}
+
+	// Initialize logger
+	logFormatter := &logrus.TextFormatter{
+		FullTimestamp: true,
+	}
+	err := logger.LoadLogger(config.Logger, logFormatter)
+	if err != nil {
+		logger.LogError("Failed to initialize logger", err, &logger.LogContext{
+			"service": "consumer",
+		})
+		return
+	}
+
+	logger.LogInfo("Consumer service starting", &logger.LogContext{
+		"version": version,
+	})
 
 	// Start the Prometheus metrics endpoint in a separate goroutine
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		log.Printf("Prometheus metrics available at http://localhost:%d/metrics", config.Consumer.Port)
-		log.Fatal(http.ListenAndServe(":2113", nil)) // Port for Prometheus metrics
+		logger.LogInfo("Prometheus metrics available", &logger.LogContext{
+			"port": config.Consumer.Port,
+			"url":  fmt.Sprintf("http://localhost:%d/metrics", config.Consumer.Port),
+		})
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", config.Consumer.Port), nil); err != nil {
+			logger.LogError("Failed to start Prometheus metrics server", err, &logger.LogContext{
+				"port": config.Consumer.Port,
+			})
+		}
 	}()
 
 	// Start listener for gRPC server
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", config.Consumer.GrpcPort))
 	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
+		logger.LogError("Failed to listen", err, &logger.LogContext{
+			"grpc_port": config.Consumer.GrpcPort,
+		})
+		return
 	}
 
 	// Start the pprof server
 	go func() {
-		log.Printf("Starting pprof server on :%d", config.Consumer.ProfilingPort)
-		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", config.Consumer.ProfilingPort), nil))
+		logger.LogInfo("Starting pprof server", &logger.LogContext{
+			"port": config.Consumer.ProfilingPort,
+		})
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", config.Consumer.ProfilingPort), nil); err != nil {
+			logger.LogError("Failed to start pprof server", err, &logger.LogContext{
+				"port": config.Consumer.ProfilingPort,
+			})
+		}
 	}()
 
 	// Set up DB connection
-	// Initialize DB connection using the config values
 	dbSource := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
 		config.Database.User,
 		config.Database.Password,
@@ -145,20 +194,25 @@ func main() {
 	)
 	db, err := sql.Open("postgres", dbSource)
 	if err != nil {
-		log.Fatalf("Failed to connect to the database: %v", err)
+		logger.LogError("Failed to connect to the database", err, &logger.LogContext{
+			"host": config.Database.Host,
+			"port": config.Database.Port,
+			"db":   config.Database.DbName,
+		})
+		return
 	}
 	defer func(db *sql.DB) {
 		err := db.Close()
 		if err != nil {
-			log.Printf("Error closing DB connection: %v", err)
+			logger.LogError("Error closing DB connection", err, &logger.LogContext{})
 		}
 	}(db)
 
 	// Initialize sqlc queries struct
 	queries := persistence.New(db)
 
-	// Create a rate limiter: allows 5 tasks per second
-	limiter := rate.NewLimiter(5, 1)
+	// Create a rate limiter: allows consumptions of tasks per second as set in config
+	limiter := rate.NewLimiter(rate.Limit(config.RateLimiter.TasksPerSecond), 1)
 
 	// Initialize gRPC server
 	grpcServer := grpc.NewServer()
@@ -167,21 +221,29 @@ func main() {
 		queries: queries, // Inject queries into the server
 	})
 
-	log.Printf("Consumer service listening on :%d", config.Consumer.GrpcPort)
+	logger.LogInfo("Consumer service listening", &logger.LogContext{
+		"grpc_port": config.Consumer.GrpcPort,
+	})
 
 	// Start the gRPC server
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve gRPC server: %v", err)
+		logger.LogError("Failed to serve gRPC server", err, &logger.LogContext{
+			"grpc_port": config.Consumer.GrpcPort,
+		})
 	}
 }
 
 func (s *server) SendTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskResponse, error) {
-	// Wait for permission to process a new task based on rate limit
-	if err := s.limiter.Wait(ctx); err != nil {
-		return nil, err
+	rateLimitError := s.limiter.Wait(ctx)
+	if rateLimitError != nil {
+		logger.LogError("Rate limiter failed", rateLimitError, &logger.LogContext{})
+	} else {
+		logger.LogInfo("Processing task ....", &logger.LogContext{
+			"task_id":    req.Id,
+			"task_type":  req.Type,
+			"task_value": req.Value,
+		})
 	}
-
-	log.Printf("Processing task ID: %d, Type=%d, Value=%d", req.Id, req.Type, req.Value)
 
 	// Step 1: Update task state to "processing" immediately when received by the consumer
 	err := s.updateTaskState(req.Id, "processing")
@@ -196,8 +258,12 @@ func (s *server) SendTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskRes
 	// Step 2: Simulate processing delay
 	delayTime := time.Duration(req.Value) * time.Millisecond
 	time.Sleep(delayTime)
-	log.Printf("Delaying task ID: %d: Type=%d, Value=%d", req.Id, req.Type, req.Value)
-	log.Printf("Task ID: %d delayed by: %v", req.Id, delayTime)
+	logger.LogInfo("Delaying task", &logger.LogContext{
+		"task_id":    req.Id,
+		"task_type":  req.Type,
+		"task_value": req.Value,
+		"delay":      delayTime,
+	})
 
 	// Step 3: Update task state to "done" after processing is complete
 	err = s.updateTaskState(req.Id, "done")
@@ -225,7 +291,12 @@ func (s *server) SendTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskRes
 	taskTypeSumsMu.Unlock()
 
 	// Log the task details and total sum for the task type
-	log.Printf("Task, Task ID: %d processed (Done): Type=%d, Value=%d, TotalValueForType=%f", req.Id, req.Type, req.Value, totalValueForType)
+	logger.LogInfo("Task processed", &logger.LogContext{
+		"task_id":              req.Id,
+		"task_type":            req.Type,
+		"task_value":           req.Value,
+		"total_value_for_type": totalValueForType,
+	})
 
 	return &pb.TaskResponse{Status: "Processed"}, nil
 }

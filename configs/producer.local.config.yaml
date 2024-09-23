@@ -11,3 +11,12 @@ producer:
   grpc_consumer_url: "localhost:50051"
 prometheus:
   scrape_interval: "15s"
+
+logger:
+  level: debug
+  output_type: console
+
+rate_limiter:
+  ticker_time: 500
+
+max_backlog: 100

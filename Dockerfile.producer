@@ -13,8 +13,11 @@ RUN go mod download
 # Copy the rest of the application code
 COPY . .
 
-# Build the Producer binary
-RUN go build -o producer-binary ./producer/main.go
+# Accept the VERSION argument passed from docker-compose.yml
+ARG VERSION=dev # Fallback to 'dev' if not provided
+
+# Build the Producer binary and inject the version via ldflags
+RUN go build -ldflags="-X main.version=${VERSION}" -o producer-binary ./producer/main.go
 
 # Use a minimal base image to run the built binary
 FROM alpine:latest

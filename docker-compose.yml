@@ -17,6 +17,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.producer
+      args:
+        VERSION: ${VERSION} # Use VERSION from .env file
     ports:
       - "2112:2112" # Expose Prometheus metrics port
       - "6060:6060"  # Expose pprof for profiling
@@ -27,6 +29,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.consumer
+      args:
+        VERSION: ${VERSION} # Use VERSION from .env file
     ports:
       - "2113:2113" # Expose Prometheus metrics port
       - "6061:6060" # Expose pprof for profiling for consumer
