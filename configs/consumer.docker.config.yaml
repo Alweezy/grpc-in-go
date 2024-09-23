@@ -17,3 +17,6 @@ prometheus:
 logger:
   level: debug
   output_type: console
+
+rate_limiter:
+  tasks_per_second: 5

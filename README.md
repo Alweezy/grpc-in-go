@@ -188,5 +188,12 @@ The Consumer service uses a rate limiter to control the number of tasks processe
 
 ```
 limiter := rate.NewLimiter(5, 1) // Allows 5 tasks per second
+
 ```
-Change the parameters to modify the rate limit.
+Change the parameters to modify the rate limit. (This can be done in the configs/consumer*)
+
+```
+rate_limiter:
+  tasks_per_second: 5
+```
+

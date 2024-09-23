@@ -39,10 +39,12 @@ var (
 
 // Config struct to hold configuration values
 type Config struct {
-	Database   Database          `mapstructure:"database"`
-	Producer   Producer          `mapstructure:"producer"`
-	Prometheus Prometheus        `mapstructure:"prometheus"`
-	Logger     *logger.LogConfig `mapstructure:"logger"`
+	Database    Database          `mapstructure:"database"`
+	Producer    Producer          `mapstructure:"producer"`
+	Prometheus  Prometheus        `mapstructure:"prometheus"`
+	Logger      *logger.LogConfig `mapstructure:"logger"`
+	RateLimiter RateLimiter       `mapstructure:"rate_limiter"`
+	MaxBackLog  int               `mapstructure:"max_backlog"`
 }
 
 type Database struct {
@@ -64,7 +66,9 @@ type Prometheus struct {
 	ScrapeInterval string `mapstructure:"scrape_interval"`
 }
 
-const maxBacklog = 100
+type RateLimiter struct {
+	TickerTime float64 `mapstructure:"ticker_time"`
+}
 
 var currentBacklog int
 
@@ -181,9 +185,10 @@ func main() {
 
 	// Simulate task production with controlled rate and backlog handling
 	// produce one task every 500 microseconds
-	ticker := time.NewTicker(500 * time.Microsecond)
+	ticker := time.NewTicker(time.Duration(config.RateLimiter.TickerTime) * time.Microsecond)
 	defer ticker.Stop()
 
+	maxBacklog := config.MaxBackLog
 	for range ticker.C {
 		if currentBacklog >= maxBacklog {
 			logger.LogWarn("Max backlog reached, pausing task production", &logger.LogContext{

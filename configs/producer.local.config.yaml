@@ -15,3 +15,8 @@ prometheus:
 logger:
   level: debug
   output_type: console
+
+rate_limiter:
+  ticker_time: 500
+
+max_backlog: 100

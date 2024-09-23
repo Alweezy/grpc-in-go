@@ -75,10 +75,11 @@ type server struct {
 
 // Config struct to hold configuration values
 type Config struct {
-	Database   Database          `mapstructure:"database"`
-	Consumer   Consumer          `mapstructure:"consumer"`
-	Prometheus Prometheus        `mapstructure:"prometheus"`
-	Logger     *logger.LogConfig `mapstructure:"logger"`
+	Database    Database          `mapstructure:"database"`
+	Consumer    Consumer          `mapstructure:"consumer"`
+	Prometheus  Prometheus        `mapstructure:"prometheus"`
+	Logger      *logger.LogConfig `mapstructure:"logger"`
+	RateLimiter RateLimiter       `mapstructure:"rate_limiter"`
 }
 
 type Database struct {
@@ -98,6 +99,10 @@ type Consumer struct {
 
 type Prometheus struct {
 	ScrapeInterval string `mapstructure:"scrape_interval"`
+}
+
+type RateLimiter struct {
+	TasksPerSecond float64 `mapstructure:"tasks_per_second"`
 }
 
 var version string
@@ -206,8 +211,8 @@ func main() {
 	// Initialize sqlc queries struct
 	queries := persistence.New(db)
 
-	// Create a rate limiter: allows 5 tasks per second
-	limiter := rate.NewLimiter(5, 1)
+	// Create a rate limiter: allows consumptions of tasks per second as set in config
+	limiter := rate.NewLimiter(rate.Limit(config.RateLimiter.TasksPerSecond), 1)
 
 	// Initialize gRPC server
 	grpcServer := grpc.NewServer()
